@@ -8,6 +8,7 @@ import event.eventstruct
 import resource
 import lib
 import fs
+import fs.ext2
 
 const (
 	gpt_signature = 0x5452415020494645
@@ -150,6 +151,15 @@ pub fn scan_partitions(mut parent_device &resource.Resource, prefix string) int 
 			print('gpt: partition detected [start: ${partition.device_offset:x} sector cnt: ${partition.sector_cnt}]\n')
 
 			fs.devtmpfs_add_device(partition, '${prefix}${i}')
+
+			mut device_vfs_node := fs.get_node(vfs_root, 'dev/${prefix}${i}', false) or {
+				print('dev: unable to find devfs\n')
+				return -1
+			}
+
+			if ext2.ext2_init(mut device_vfs_node) == -1 {
+				print('this is not ext2\n')
+			}
 		}
 
 		return 0
@@ -187,6 +197,15 @@ pub fn scan_partitions(mut parent_device &resource.Resource, prefix string) int 
 			print('mbr: partition detected [start: ${partition.device_offset:x} sector cnt: ${partition.sector_cnt}]\n')
 
 			fs.devtmpfs_add_device(partition, '${prefix}${i}')
+
+			mut device_vfs_node := fs.get_node(vfs_root, 'dev/${prefix}${i}', false) or {
+				print('dev: unable to find devfs\n')
+				return -1
+			}
+
+			if ext2.ext2_init(mut device_vfs_node) == -1 {
+				print('this is not ext2\n')
+			}
 		}
 
 		return 0
