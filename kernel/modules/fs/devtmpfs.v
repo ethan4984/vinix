@@ -123,7 +123,9 @@ fn (mut this DevTmpFSResource) grow(handle voidptr, new_size u64) ? {
 	this.stat.blocks = lib.div_roundup(new_size, this.stat.blksize)
 }
 
-struct DevTmpFS {}
+struct DevTmpFS {
+	backing_device &VFSNode
+}
 
 __global (
 	devtmpfs_dev_id u64
@@ -131,8 +133,8 @@ __global (
 	devtmpfs_root &VFSNode
 )
 
-fn (mut this DevTmpFS) instantiate() &FileSystem {
-	new := &DevTmpFS{}
+fn (mut this DevTmpFS) instantiate() ?&FileSystem {
+	new := &DevTmpFS{backing_device: 0}
 	return new
 }
 
@@ -144,12 +146,14 @@ fn (mut this DevTmpFS) mount(parent &VFSNode, name string, source &VFSNode) ?&VF
 	}
 	if devtmpfs_root == 0 {
 		// XXX this will break if devtmpfs is mounted more than once
-		devtmpfs_root = this.create(parent, name, 0o644 | stat.ifdir)
+		devtmpfs_root = this.create(parent, name, 0o644 | stat.ifdir) or {
+			return none
+		}
 	}
 	return devtmpfs_root
 }
 
-fn (mut this DevTmpFS) create(parent &VFSNode, name string, mode int) &VFSNode {
+fn (mut this DevTmpFS) create(parent &VFSNode, name string, mode int) ?&VFSNode {
 	mut new_node := create_node(this, parent, name, stat.isdir(mode))
 
 	mut new_resource := &DevTmpFSResource{
@@ -177,7 +181,7 @@ fn (mut this DevTmpFS) create(parent &VFSNode, name string, mode int) &VFSNode {
 	return new_node
 }
 
-fn (mut this DevTmpFS) symlink(parent &VFSNode, dest string, target string) &VFSNode {
+fn (mut this DevTmpFS) symlink(parent &VFSNode, dest string, target string) ?&VFSNode {
 	mut new_node := create_node(this, parent, target, false)
 
 	mut new_resource := &DevTmpFSResource{

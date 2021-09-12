@@ -86,10 +86,69 @@ pub mut:
 [packed]
 struct EXT2DirectoryEntry {
 pub mut:
-	inode u32
+	inode_index u32
 	entry_size u16
 	name_length u8
 	dir_type u8
+}
+
+struct EXT2Resource {
+pub mut:
+	stat     stat.Stat
+	refcount int
+	l        klock.Lock
+	event    eventstruct.Event
+	status   int
+	can_mmap bool
+
+	filesystem &EXT2Filesystem
+	dir_entry EXT2DirectoryEntry
+}
+
+fn (mut this EXT2Resource) mmap(page u64, flags int) voidptr {
+	return 0
+}
+
+fn (mut this EXT2Resource) read(handle voidptr, buf voidptr, loc u64, count u64) ?i64 {
+	mut current_inode := &EXT2Inode { }
+
+	current_inode.read_entry(mut this.filesystem, this.dir_entry.inode_index) or {
+		return none
+	}
+
+	return current_inode.read(mut this.filesystem, buf, loc, count)
+}
+
+fn (mut this EXT2Resource) write(handle voidptr, buf voidptr, loc u64, count u64) ?i64 {
+	mut current_inode := &EXT2Inode { }
+
+	current_inode.read_entry(mut this.filesystem, this.dir_entry.inode_index) or {
+		return none
+	}
+
+	return current_inode.write(mut this.filesystem, buf, this.dir_entry.inode_index, loc, count)
+}
+
+fn (mut this EXT2Resource) ioctl(handle voidptr, request u64, argp voidptr) ?int {
+	return resource.default_ioctl(handle, request, argp)
+}
+
+fn (mut this EXT2Resource) unref(handle voidptr) ? {
+	this.refcount--
+}
+
+fn (mut this EXT2Resource) grow(handle voidptr, new_size u64) ? {
+	this.l.acquire()
+
+	mut current_inode := &EXT2Inode { }
+
+	current_inode.read_entry(mut this.filesystem, this.dir_entry.inode_index) or {
+		return error('')
+	}
+
+	current_inode.resize(mut this.filesystem, this.dir_entry.inode_index, 0, new_size) or {
+		return error('')
+	}
 }
 
 struct EXT2Filesystem {
@@ -101,6 +160,8 @@ pub mut:
 	status int
 	can_mmap bool
 
+	dev_id u64
+
 	superblock &EXT2Superblock
 	root_inode &EXT2Inode
 
@@ -108,7 +169,70 @@ pub mut:
 	frag_size u64
 	bgd_cnt u64
 
-	parent_device &fs.VFSNode
+	backing_device &fs.VFSNode
+}
+
+fn (mut this EXT2Filesystem) populate(node &fs.VFSNode) {
+
+}
+
+fn (mut this EXT2Filesystem) instantiate() ?&fs.FileSystem {
+	new := ext2_init(mut this.backing_device) or {
+		return none
+	}
+	return new
+}
+
+fn (mut this EXT2Filesystem) symlink(parent &fs.VFSNode, dest string, target string) ?&fs.VFSNode {
+	mut new_node := fs.create_node(this, parent, target, false)
+
+	mut new_resource := &EXT2Resource {
+		filesystem: unsafe { this }
+	}
+
+	new_resource.stat.size = u64(target.len)
+	new_resource.stat.blocks = 0
+	new_resource.stat.blksize = this.block_size
+	new_resource.stat.dev = this.dev_id
+	new_resource.stat.mode = stat.iflnk | 0o777
+	new_resource.stat.nlink = 1
+
+	new_resource.stat.ino = this.allocate_inode() or {
+		return none
+	}
+
+	new_node.resource = new_resource
+	new_node.symlink_target = dest
+
+	return new_node
+
+}
+
+fn (mut this EXT2Filesystem) create(parent &fs.VFSNode, name string, mode int) ?&fs.VFSNode {
+	mut new_node := fs.create_node(this, parent, name, stat.isdir(mode))
+
+	mut new_resource := &EXT2Resource {
+		filesystem: unsafe { this }
+	}
+
+	new_resource.stat.size = 0
+	new_resource.stat.blocks = 0
+	new_resource.stat.blksize = this.block_size
+	new_resource.stat.dev = this.dev_id
+	new_resource.stat.mode = mode
+	new_resource.stat.nlink = 1
+
+	new_resource.stat.ino = this.allocate_inode() or {
+		return none
+	}
+
+	new_node.resource = new_resource
+
+	return new_node
+}
+
+fn (mut this EXT2Filesystem) mount(parent &fs.VFSNode, name string, source &fs.VFSNode) ?&fs.VFSNode {
+	return none
 }
 
 fn (mut fs EXT2Filesystem) dir_search_relative(mut parent EXT2Inode, path string) ?EXT2DirectoryEntry {
@@ -125,7 +249,7 @@ fn (mut fs EXT2Filesystem) dir_search_relative(mut parent EXT2Inode, path string
 		name := unsafe { tos(&char(name_buffer), dir_entry.name_length) }
 
 		if path == name {
-			if dir_entry.inode == 0 {
+			if dir_entry.inode_index == 0 {
 				memory.free(buffer)
 				return none
 			}
@@ -170,7 +294,7 @@ fn (mut fs EXT2Filesystem) dir_search_absolute(mut parent EXT2Inode, path string
 			return none
 		}
 
-		parent.read_entry(mut fs, dir_entry.inode) or {
+		parent.read_entry(mut fs, dir_entry.inode_index) or {
 			return none
 		}
 	}
@@ -178,7 +302,7 @@ fn (mut fs EXT2Filesystem) dir_search_absolute(mut parent EXT2Inode, path string
 	return dir_entry
 }
 
-fn (mut inode EXT2Inode) read(mut fs &EXT2Filesystem, buf voidptr, off u64, cnt u64) ?u64 {
+fn (mut inode EXT2Inode) read(mut fs &EXT2Filesystem, buf voidptr, off u64, cnt u64) ?i64 {
 	for headway := u64(0); headway < cnt; {
 		iblock := (off + headway) / fs.block_size
 
@@ -200,11 +324,11 @@ fn (mut inode EXT2Inode) read(mut fs &EXT2Filesystem, buf voidptr, off u64, cnt 
 		headway += size
 	}
 
-	return cnt
+	return i64(cnt)
 }
 
 fn (mut inode EXT2Inode) resize(mut fs &EXT2Filesystem, inode_index u32, start u64, cnt u64) ?int {
-	sector_size := fs.parent_device.resource.stat.blksize
+	sector_size := fs.backing_device.resource.stat.blksize
 
 	if (start + cnt) < (inode.sector_cnt * sector_size) {
 		return 0		
@@ -236,7 +360,7 @@ fn (mut inode EXT2Inode) resize(mut fs &EXT2Filesystem, inode_index u32, start u
 	return 0
 }
 
-fn (mut inode EXT2Inode) write(mut fs &EXT2Filesystem, buf voidptr, inode_index u32, off u64, cnt u64) ?u64 {
+fn (mut inode EXT2Inode) write(mut fs &EXT2Filesystem, buf voidptr, inode_index u32, off u64, cnt u64) ?i64 {
 	inode.resize(mut fs, inode_index, off, cnt) or {
 		return none
 	}
@@ -262,11 +386,11 @@ fn (mut inode EXT2Inode) write(mut fs &EXT2Filesystem, buf voidptr, inode_index 
 		headway += size
 	}
 
-	return cnt
+	return i64(cnt)
 }
 
-fn (mut inode EXT2Inode) free(mut fs &EXT2Filesystem, inode_index u32) ?int {
-	for i := u64(0); i < lib.div_roundup(inode.sector_cnt * fs.parent_device.resource.stat.blksize, fs.block_size); i++ {
+fn (mut inode EXT2Inode) free_entry(mut fs &EXT2Filesystem, inode_index u32) ?int {
+	for i := u64(0); i < lib.div_roundup(inode.sector_cnt * fs.backing_device.resource.stat.blksize, fs.block_size); i++ {
 		block_index := inode.get_block(mut fs, u32(i)) or {
 			return none
 		}
@@ -703,7 +827,7 @@ fn (mut inode EXT2Inode) write_entry(mut fs &EXT2Filesystem, inode_index u32) ?i
 }
 
 fn (mut fs EXT2Filesystem) raw_device_read(buf voidptr, loc u64, count u64) ?i64 {
-	lba_size := fs.parent_device.resource.stat.blksize
+	lba_size := fs.backing_device.resource.stat.blksize
 
 	mut alignment := u64(0)
 	if (loc & (lba_size - 1)) + count > lba_size {
@@ -715,7 +839,7 @@ fn (mut fs EXT2Filesystem) raw_device_read(buf voidptr, loc u64, count u64) ?i64
 
 	buffer := voidptr(u64(memory.pmm_alloc(lib.div_roundup(lba_cnt * lba_size, page_size))) + higher_half)
 
-	fs.parent_device.resource.read(0, buffer, lba_start * lba_size, lba_cnt * lba_size) or {
+	fs.backing_device.resource.read(0, buffer, lba_start * lba_size, lba_cnt * lba_size) or {
 		print('ext2: unable to read from device\n')
 		return none
 	}
@@ -730,7 +854,7 @@ fn (mut fs EXT2Filesystem) raw_device_read(buf voidptr, loc u64, count u64) ?i64
 }
 
 fn (mut fs EXT2Filesystem) raw_device_write(buf voidptr, loc u64, count u64) ?i64 {
-	lba_size := fs.parent_device.resource.stat.blksize
+	lba_size := fs.backing_device.resource.stat.blksize
 
 	mut alignment := u64(0)
 	if (loc & (lba_size - 1)) + count > lba_size {
@@ -742,7 +866,7 @@ fn (mut fs EXT2Filesystem) raw_device_write(buf voidptr, loc u64, count u64) ?i6
 
 	buffer := voidptr(u64(memory.pmm_alloc(lib.div_roundup(lba_cnt * lba_size, page_size))) + higher_half)
 
-	fs.parent_device.resource.read(0, buffer, lba_start * lba_size, lba_cnt * lba_size) or {
+	fs.backing_device.resource.read(0, buffer, lba_start * lba_size, lba_cnt * lba_size) or {
 		print('ext2: unable to write from device\n')
 		return none
 	}
@@ -751,7 +875,7 @@ fn (mut fs EXT2Filesystem) raw_device_write(buf voidptr, loc u64, count u64) ?i6
 
 	unsafe { C.memcpy(voidptr(u64(buffer) + lba_offset), buf, count) }
 
-	fs.parent_device.resource.write(0, buffer, lba_start * lba_size, lba_cnt * lba_size) or {
+	fs.backing_device.resource.write(0, buffer, lba_start * lba_size, lba_cnt * lba_size) or {
 		print('ext2: unable to read from device\n')
 		return none
 	}
@@ -761,26 +885,26 @@ fn (mut fs EXT2Filesystem) raw_device_write(buf voidptr, loc u64, count u64) ?i6
 	return i64(count)
 }
 
-pub fn ext2_init(mut parent_device &fs.VFSNode) int {
+pub fn ext2_init(mut backing_device &fs.VFSNode) ?&EXT2Filesystem {
 	mut new_filesystem := &EXT2Filesystem {
-		parent_device: unsafe { parent_device }
+		backing_device: unsafe { backing_device }
 		superblock: &EXT2Superblock { }
 		root_inode: &EXT2Inode { }
 	}
 
-	new_filesystem.raw_device_read(new_filesystem.superblock, parent_device.resource.stat.blksize * 2, sizeof(EXT2Superblock)) or {
-		return -1
+	new_filesystem.raw_device_read(new_filesystem.superblock, backing_device.resource.stat.blksize * 2, sizeof(EXT2Superblock)) or {
+		return none
 	}
 
 	if new_filesystem.superblock.signature != 0xef53 {
-		return -1
+		return none
 	}
 
 	new_filesystem.block_size = 1024 << new_filesystem.superblock.block_size
 	new_filesystem.frag_size = 1024 << new_filesystem.superblock.frag_size
 	new_filesystem.bgd_cnt = lib.div_roundup(new_filesystem.superblock.block_cnt, new_filesystem.superblock.blocks_per_group)
 
-	print('ext2: filesystem detected on device ${fs.pathname(parent_device)}\n')
+	print('ext2: filesystem detected on device ${fs.pathname(backing_device)}\n')
 	print('ext2: inode count: ${new_filesystem.superblock.inode_cnt}\n')
 	print('ext2: inodes per group: ${new_filesystem.superblock.inodes_per_group:x}\n')
 	print('ext2: block count: ${new_filesystem.superblock.block_cnt:x}\n')
@@ -790,8 +914,8 @@ pub fn ext2_init(mut parent_device &fs.VFSNode) int {
 
 	new_filesystem.root_inode.read_entry(mut new_filesystem, 2) or {
 		print('ext2: unable to read root inode\n')
-		return -1
+		return none
 	}
 
-	return 0
+	return new_filesystem
 }

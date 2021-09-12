@@ -133,10 +133,11 @@ struct TmpFS {
 pub mut:
 	dev_id u64
 	inode_counter u64
+	backing_device &VFSNode
 }
 
-fn (mut this TmpFS) instantiate() &FileSystem {
-	new := &TmpFS{}
+fn (mut this TmpFS) instantiate() ?&FileSystem {
+	new := &TmpFS{backing_device: 0}
 	return new
 }
 
@@ -147,7 +148,7 @@ fn (mut this TmpFS) mount(parent &VFSNode, name string, source &VFSNode) ?&VFSNo
 	return this.create(parent, name, 0o644 | stat.ifdir)
 }
 
-fn (mut this TmpFS) create(parent &VFSNode, name string, mode int) &VFSNode {
+fn (mut this TmpFS) create(parent &VFSNode, name string, mode int) ?&VFSNode {
 	mut new_node := create_node(this, parent, name, stat.isdir(mode))
 
 	mut new_resource := &TmpFSResource{
@@ -175,7 +176,7 @@ fn (mut this TmpFS) create(parent &VFSNode, name string, mode int) &VFSNode {
 	return new_node
 }
 
-fn (mut this TmpFS) symlink(parent &VFSNode, dest string, target string) &VFSNode {
+fn (mut this TmpFS) symlink(parent &VFSNode, dest string, target string) ?&VFSNode {
 	mut new_node := create_node(this, parent, target, false)
 
 	mut new_resource := &TmpFSResource{

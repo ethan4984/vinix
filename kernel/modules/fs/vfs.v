@@ -20,11 +20,13 @@ pub const seek_end = 2
 pub const seek_set = 3
 
 interface FileSystem {
-	instantiate() &FileSystem
+	instantiate() ?&FileSystem
 	populate(&VFSNode)
 	mount(&VFSNode, string, &VFSNode) ?&VFSNode
-	create(&VFSNode, string, int) &VFSNode
-	symlink(&VFSNode, string, string) &VFSNode
+	create(&VFSNode, string, int) ?&VFSNode
+	symlink(&VFSNode, string, string) ?&VFSNode
+
+	backing_device &VFSNode
 }
 
 pub struct VFSNode {
@@ -45,7 +47,7 @@ __global (
 	filesystems map[string]&FileSystem
 )
 
-fn create_node(filesystem &FileSystem, parent &VFSNode, name string, dir bool) &VFSNode {
+pub fn create_node(filesystem &FileSystem, parent &VFSNode, name string, dir bool) &VFSNode {
 	mut node := &VFSNode{
 				name: name
 				parent: unsafe { parent }
@@ -67,8 +69,8 @@ pub fn initialise() {
 	filesystems = map[string]&FileSystem{}
 
 	// Install filesystems by name string
-	filesystems['tmpfs'] = &TmpFS{}
-	filesystems['devtmpfs'] = &DevTmpFS{}
+	filesystems['tmpfs'] = &TmpFS{backing_device: 0}
+	filesystems['devtmpfs'] = &DevTmpFS{backing_device: 0}
 }
 
 fn reduce_node(node &VFSNode, follow_symlinks bool) &VFSNode {
@@ -215,7 +217,9 @@ pub fn mount(parent &VFSNode, source string, target string, filesystem string) ?
 		return error('')
 	}
 
-	fs := filesystems[filesystem].instantiate()
+	fs := filesystems[filesystem].instantiate() or {
+		return error('')
+	}
 
 	mut mount_node := fs.mount(parent_of_tgt_node, basename, source_node) ?
 
@@ -275,7 +279,9 @@ pub fn symlink(parent &VFSNode, dest string, target string) ?&VFSNode {
 		return none
 	}
 
-	target_node = parent_of_tgt_node.filesystem.symlink(parent_of_tgt_node, dest, basename)
+	target_node = parent_of_tgt_node.filesystem.symlink(parent_of_tgt_node, dest, basename) or {
+		return none
+	}
 
 	unsafe { parent_of_tgt_node.children[basename] = target_node }
 
@@ -309,7 +315,9 @@ pub fn internal_create(parent &VFSNode, name string, mode int) ?&VFSNode {
 		return none
 	}
 
-	target_node = parent_of_tgt_node.filesystem.create(parent_of_tgt_node, basename, mode)
+	target_node = parent_of_tgt_node.filesystem.create(parent_of_tgt_node, basename, mode) or {
+		return none
+	}
 
 	unsafe { parent_of_tgt_node.children[basename] = target_node }
 
