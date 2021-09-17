@@ -11,11 +11,11 @@ import event.eventstruct
 
 struct DevTmpFSResource {
 pub mut:
-	stat     stat.Stat
+	stat	 stat.Stat
 	refcount int
-	l        klock.Lock
-	event    eventstruct.Event
-	status   int
+	l		 klock.Lock
+	event	 eventstruct.Event
+	status	 int
 	can_mmap bool
 
 	storage  &byte
@@ -138,7 +138,9 @@ fn (mut this DevTmpFS) instantiate() ?&FileSystem {
 	return new
 }
 
-fn (mut this DevTmpFS) populate(node &VFSNode) {}
+fn (mut this DevTmpFS) populate(node &VFSNode) ?[]&VFSNode {
+	return none
+}
 
 fn (mut this DevTmpFS) mount(parent &VFSNode, name string, source &VFSNode) ?&VFSNode {
 	if devtmpfs_dev_id == 0 {

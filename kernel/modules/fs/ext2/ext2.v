@@ -94,15 +94,14 @@ pub mut:
 
 struct EXT2Resource {
 pub mut:
-	stat     stat.Stat
+	stat	 stat.Stat
 	refcount int
-	l        klock.Lock
-	event    eventstruct.Event
-	status   int
+	l		 klock.Lock
+	event	 eventstruct.Event
+	status	 int
 	can_mmap bool
 
 	filesystem &EXT2Filesystem
-	dir_entry EXT2DirectoryEntry
 }
 
 fn (mut this EXT2Resource) mmap(page u64, flags int) voidptr {
@@ -112,7 +111,7 @@ fn (mut this EXT2Resource) mmap(page u64, flags int) voidptr {
 fn (mut this EXT2Resource) read(handle voidptr, buf voidptr, loc u64, count u64) ?i64 {
 	mut current_inode := &EXT2Inode { }
 
-	current_inode.read_entry(mut this.filesystem, this.dir_entry.inode_index) or {
+	current_inode.read_entry(mut this.filesystem, u32(this.stat.ino)) or {
 		return none
 	}
 
@@ -122,11 +121,11 @@ fn (mut this EXT2Resource) read(handle voidptr, buf voidptr, loc u64, count u64)
 fn (mut this EXT2Resource) write(handle voidptr, buf voidptr, loc u64, count u64) ?i64 {
 	mut current_inode := &EXT2Inode { }
 
-	current_inode.read_entry(mut this.filesystem, this.dir_entry.inode_index) or {
+	current_inode.read_entry(mut this.filesystem, u32(this.stat.ino)) or {
 		return none
 	}
 
-	return current_inode.write(mut this.filesystem, buf, this.dir_entry.inode_index, loc, count)
+	return current_inode.write(mut this.filesystem, buf, u32(this.stat.ino), loc, count)
 }
 
 fn (mut this EXT2Resource) ioctl(handle voidptr, request u64, argp voidptr) ?int {
@@ -142,11 +141,11 @@ fn (mut this EXT2Resource) grow(handle voidptr, new_size u64) ? {
 
 	mut current_inode := &EXT2Inode { }
 
-	current_inode.read_entry(mut this.filesystem, this.dir_entry.inode_index) or {
+	current_inode.read_entry(mut this.filesystem, u32(this.stat.ino)) or {
 		return error('')
 	}
 
-	current_inode.resize(mut this.filesystem, this.dir_entry.inode_index, 0, new_size) or {
+	current_inode.resize(mut this.filesystem, u32(this.stat.ino), 0, new_size) or {
 		return error('')
 	}
 }
@@ -172,8 +171,57 @@ pub mut:
 	backing_device &fs.VFSNode
 }
 
-fn (mut this EXT2Filesystem) populate(node &fs.VFSNode) {
+fn (mut this EXT2Filesystem) populate(node &fs.VFSNode) ?[]&fs.VFSNode {
+	mut parent := &EXT2Inode {}
+	parent.read_entry(mut this, u32(node.resource.stat.ino)) or {
+		return none
+	}
 
+	buffer := &voidptr(memory.calloc(parent.size32l, 1))
+	parent.read(mut this, buffer, 0, parent.size32l) or {
+		return none
+	}
+
+	mut list := []&fs.VFSNode {}
+
+	for i := u32(0); i < parent.size32l; {
+		dir_entry := &EXT2DirectoryEntry(u64(buffer) + i)
+	
+		name_buffer := memory.calloc(dir_entry.name_length + 1, 1)
+		unsafe { C.memcpy(name_buffer, voidptr(u64(dir_entry) + sizeof(EXT2DirectoryEntry)), u64(dir_entry.name_length)) }
+		name := unsafe { tos(&char(name_buffer), dir_entry.name_length) }
+
+		mut vfs_node := fs.create_node(this, node, name, (dir_entry.dir_type == 2))
+		mut resource := &EXT2Resource { filesystem: unsafe { this } }
+
+		if dir_entry.inode_index == 0 {
+			memory.free(buffer)
+			return none
+		}
+
+		resource.stat.ino = dir_entry.inode_index
+
+		match dir_entry.dir_type {
+			1 { resource.stat.mode |= stat.ifreg }
+			2 { resource.stat.mode |= stat.ifdir }
+			3 { resource.stat.mode |= stat.ifchr }
+			4 { resource.stat.mode |= stat.ifblk }
+			5 { resource.stat.mode |= stat.ififo }
+			6 { resource.stat.mode |= stat.ifsock }
+			7 { resource.stat.mode |= stat.iflnk }
+			else { }
+		}
+
+		vfs_node.resource = resource
+
+		list << vfs_node
+
+		i += dir_entry.entry_size
+	}
+
+	memory.free(buffer)
+
+	return list
 }
 
 fn (mut this EXT2Filesystem) instantiate() ?&fs.FileSystem {
@@ -197,7 +245,20 @@ fn (mut this EXT2Filesystem) symlink(parent &fs.VFSNode, dest string, target str
 	new_resource.stat.mode = stat.iflnk | 0o777
 	new_resource.stat.nlink = 1
 
-	new_resource.stat.ino = this.allocate_inode() or {
+	mut parent_inode := &EXT2Inode {}
+	parent_inode.read_entry(mut this, u32(parent.resource.stat.ino)) or {
+		return none
+	}
+
+	dir_entry := this.dir_search_relative(mut parent_inode, target) or {
+		return none
+	}
+
+	new_resource.stat.ino = dir_entry.inode_index
+
+	mut file_type := 7
+
+	this.dir_create_entry(mut parent_inode, u32(parent.resource.stat.ino), u32(new_resource.stat.ino), file_type, target) or {
 		return none
 	}
 
@@ -205,7 +266,6 @@ fn (mut this EXT2Filesystem) symlink(parent &fs.VFSNode, dest string, target str
 	new_node.symlink_target = dest
 
 	return new_node
-
 }
 
 fn (mut this EXT2Filesystem) create(parent &fs.VFSNode, name string, mode int) ?&fs.VFSNode {
@@ -228,11 +288,56 @@ fn (mut this EXT2Filesystem) create(parent &fs.VFSNode, name string, mode int) ?
 
 	new_node.resource = new_resource
 
+	mut parent_inode := &EXT2Inode {}
+	parent_inode.read_entry(mut this, u32(parent.resource.stat.ino)) or {
+		return none
+	}
+	
+	mut file_type := 0
+
+	if stat.isreg(mode) {
+		file_type = 1
+	} else if stat.isdir(mode) {
+		file_type = 2
+	} else if stat.ischr(mode) {
+		file_type = 3
+	} else if stat.isblk(mode) {
+		file_type = 4
+	} else if stat.isifo(mode) {
+		file_type = 5
+	} else if stat.issock(mode) {
+		file_type = 6
+	} else if stat.islnk(mode) {
+		file_type = 7
+	}
+
+	this.dir_create_entry(mut parent_inode, u32(parent.resource.stat.ino), u32(new_resource.stat.ino), file_type, name) or {
+		return none
+	}
+
 	return new_node
 }
 
 fn (mut this EXT2Filesystem) mount(parent &fs.VFSNode, name string, source &fs.VFSNode) ?&fs.VFSNode {
-	return none
+	this.dev_id = resource.create_dev_id()
+
+	mut new_node := fs.create_node(this, parent, name, true)
+
+	mut new_resource := &EXT2Resource {
+		filesystem: unsafe { this }
+	}
+
+	new_resource.stat.size = 0
+	new_resource.stat.blocks = 0
+	new_resource.stat.blksize = this.block_size
+	new_resource.stat.dev = this.dev_id
+	new_resource.stat.mode = 0o644 | stat.ifdir
+	new_resource.stat.nlink = 1
+	new_resource.stat.ino = 2
+
+	new_node.resource = new_resource
+
+	return new_node
 }
 
 fn (mut fs EXT2Filesystem) dir_search_relative(mut parent EXT2Inode, path string) ?EXT2DirectoryEntry {
@@ -300,6 +405,50 @@ fn (mut fs EXT2Filesystem) dir_search_absolute(mut parent EXT2Inode, path string
 	}
 
 	return dir_entry
+}
+
+fn (mut fs EXT2Filesystem) dir_create_entry(mut parent EXT2Inode, parent_inode_index u32, new_inode u32, dir_type u8, name string) ?int {
+	buffer := &voidptr(memory.calloc(parent.size32l, 1))
+	parent.read(mut fs, buffer, 0, parent.size32l) or {
+		return none
+	}
+
+	mut found := false
+
+	for i := u32(0); i < parent.size32l; {
+		mut dir_entry := &EXT2DirectoryEntry(u64(buffer) + i)
+
+		if found == true {
+			dir_entry.inode_index = new_inode
+			dir_entry.dir_type = dir_type
+			dir_entry.name_length = name.len
+			dir_entry.entry_size = u16(parent.size32l - i)
+
+			unsafe { C.memcpy(voidptr(u64(dir_entry) + sizeof(EXT2DirectoryEntry)), name.str, name.len) }
+
+			parent.write(mut fs, buffer, parent_inode_index, 0, parent.size32l) or {
+				return none
+			}
+
+			return 0
+		}
+	
+		expected_size := lib.align_up(sizeof(EXT2DirectoryEntry) + dir_entry.name_length, 4)
+		if dir_entry.entry_size != expected_size {
+			dir_entry.entry_size = u16(expected_size)
+			i += u32(expected_size)
+
+			found = true
+
+			continue
+		}
+
+		i += dir_entry.entry_size
+	}
+
+	memory.free(buffer)
+
+	return none
 }
 
 fn (mut inode EXT2Inode) read(mut fs &EXT2Filesystem, buf voidptr, off u64, cnt u64) ?i64 {

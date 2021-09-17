@@ -21,7 +21,7 @@ pub const seek_set = 3
 
 interface FileSystem {
 	instantiate() ?&FileSystem
-	populate(&VFSNode)
+	populate(&VFSNode) ?[]&VFSNode
 	mount(&VFSNode, string, &VFSNode) ?&VFSNode
 	create(&VFSNode, string, int) ?&VFSNode
 	symlink(&VFSNode, string, string) ?&VFSNode
@@ -31,13 +31,13 @@ interface FileSystem {
 
 pub struct VFSNode {
 pub mut:
-	mountpoint     &VFSNode
-	redir          &VFSNode
-	resource       &resource.Resource
-	filesystem     &FileSystem
-	name           string
-	parent         &VFSNode
-	children       &map[string]&VFSNode
+	mountpoint	   &VFSNode
+	redir		   &VFSNode
+	resource	   &resource.Resource
+	filesystem	   &FileSystem
+	name		   string
+	parent		   &VFSNode
+	children	   &map[string]&VFSNode
 	symlink_target string
 }
 

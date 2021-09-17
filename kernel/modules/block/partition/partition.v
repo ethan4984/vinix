@@ -157,7 +157,7 @@ pub fn scan_partitions(mut parent_device &resource.Resource, prefix string) int 
 				return -1
 			}
 
-			if ext2.ext2_init(mut device_vfs_node) == -1 {
+			ext2.ext2_init(mut device_vfs_node) or {
 				print('this is not ext2\n')
 			}
 		}
@@ -203,7 +203,7 @@ pub fn scan_partitions(mut parent_device &resource.Resource, prefix string) int 
 				return -1
 			}
 
-			if ext2.ext2_init(mut device_vfs_node) == -1 {
+			ext2.ext2_init(mut device_vfs_node) or {
 				print('this is not ext2\n')
 			}
 		}
