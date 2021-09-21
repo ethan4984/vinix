@@ -334,7 +334,7 @@ pub mut:
 }
 
 __global (
-	controller_list []&NVMEController
+	nvme_controller_list []&NVMEController
 )
 
 fn (mut dev NVMENamespace) read(handle voidptr, buffer voidptr, loc u64, count u64) ?i64 {
@@ -799,8 +799,8 @@ pub fn (mut c NVMEController) initialise(pci_device &pci.PCIDevice) int {
 			print('nvme: lba size: ${new_namespace.stat.blksize:x}\n')
 			print('nvme: max prps: ${new_namespace.max_prps:x}\n')
 
-			fs.devtmpfs_add_device(new_namespace, 'nvme${controller_list.len}n${i}')
-			partition.scan_partitions(mut new_namespace, 'nvme${controller_list.len}n${i}p')
+			fs.devtmpfs_add_device(new_namespace, 'nvme${nvme_controller_list.len}n${i}')
+			partition.scan_partitions(mut new_namespace, 'nvme${nvme_controller_list.len}n${i}p')
 
 			c.namespace_list << new_namespace
 		}
@@ -818,7 +818,7 @@ pub fn initialise() {
 											   }
 
 			if nvme_device.initialise(device) != -1 {
-				controller_list << nvme_device
+				nvme_controller_list << nvme_device
 			}
 		}
 	}

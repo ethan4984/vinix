@@ -21,6 +21,7 @@ import futex
 import pci
 import dev.ata
 import dev.nvme
+import dev.ahci
 import dev.streams
 import dev.random
 import syscall.table
